@@ -1,0 +1,87 @@
+name: Equalyzer 990 ETL
+
+on:
+  # Run manually from GitHub's Actions tab with a click of a button
+  workflow_dispatch:
+    inputs:
+      run_relationships:
+        description: 'Also run generate_relationships.py after ETL?'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      max_filings:
+        description: 'Max filings to process (default 100000)'
+        required: false
+        default: '100000'
+      batch_size:
+        description: 'Batch size (reduce to 10 if you see Batch FAILED errors)'
+        required: false
+        default: '25'
+
+  # Optional: uncomment to also run on a schedule (e.g. every Sunday at 2am UTC)
+  # schedule:
+  #   - cron: '0 2 * * 0'
+
+jobs:
+  etl:
+    name: Run 990 ETL
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6-hour max (GitHub Actions limit for public repos)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Restore cached downloads so re-runs don't re-download ZIPs
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: downloads/
+          key: irs-990-downloads-${{ runner.os }}
+          restore-keys: |
+            irs-990-downloads-
+
+      # Restore processed_ids.txt so the script can resume where it left off
+      - name: Restore progress cache
+        uses: actions/cache@v4
+        with:
+          path: processed_ids.txt
+          key: etl-progress-${{ github.run_number }}
+          restore-keys: |
+            etl-progress-
+
+      - name: Run ETL
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          ETL_SECRET_TOKEN2: ${{ secrets.ETL_SECRET_TOKEN2 }}
+          MAX_FILINGS: ${{ github.event.inputs.max_filings || '100000' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '25' }}
+        run: python etl_990_v3.py
+
+      - name: Run generate_relationships.py
+        if: ${{ github.event.inputs.run_relationships == 'true' || github.event_name == 'schedule' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL}}
+          ETL_SECRET_TOKEN2: ${{ secrets.ETL_SECRET_TOKEN2 }}
+        run: python generate_relationships.py
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-logs-${{ github.run_number }}
+          path: |
+            etl_990.log
+            relationships.log
+          retention-days: 30
